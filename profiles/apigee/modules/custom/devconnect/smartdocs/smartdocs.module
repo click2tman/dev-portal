@@ -1,0 +1,1855 @@
+<?php
+/**
+ * @file
+ * Enables SmartDocs methods to be saved as nodes, and vice versa.
+ */
+
+require_once __DIR__ . '/smartdocs.theme.inc';
+
+use Apigee\SmartDocs\Model;
+use Apigee\SmartDocs\Revision;
+use Apigee\SmartDocs\Resource;
+use Apigee\SmartDocs\Method;
+use Apigee\SmartDocs\Security;
+use Apigee\Exceptions\ResponseException;
+use Apigee\Exceptions\ParameterException;
+
+define('SMARTDOCS_TEMPLATE_NAME', 'devportal-drupal-cms');
+
+/**
+ * Implements hook_init().
+ */
+function smartdocs_init() {
+  $path = $_GET['q'];
+  // Short circuit if we are serving a non-HTML asset.
+  $dot_pos = strrpos($path, '.');
+  if ($dot_pos) {
+    $ext = strtolower(substr($path, $dot_pos + 1));
+    if ($ext == 'ico' || $ext == 'png' || $ext == 'jpg' || $ext == 'css' || $ext == 'js') {
+      return;
+    }
+  }
+  drupal_add_css(drupal_get_path('module', 'smartdocs') . '/css/smartdocs.css');
+}
+
+/**
+ * Implements hook_menu().
+ */
+function smartdocs_menu() {
+  $items = array();
+
+  // Overall settings.
+  $items['admin/config/smartdocs'] = array(
+    'title' => 'SmartDocs',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('smartdocs_settings'),
+    'access arguments' => array('administer smartdocs content'),
+    'file' => 'smartdocs.admin.inc',
+    'weight' => -100,
+    'type' => MENU_NORMAL_ITEM,
+  );
+
+  // Models.
+  $items['admin/content/smartdocs/models'] = array(
+    'title' => 'SmartDocs',
+    'page callback' => 'smartdocs_model_list',
+    'access arguments' => array('administer smartdocs content'),
+    'file' => 'smartdocs.admin.inc',
+    'weight' => -98,
+    'type' => MENU_NORMAL_ITEM,
+  );
+
+  $items['admin/content/smartdocs/models/add'] = array(
+    'title' => 'Add Model',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('smartdocs_add_model'),
+    'access arguments' => array('administer smartdocs content'),
+    'file' => 'smartdocs.admin.inc',
+    'type' => MENU_CALLBACK,
+  );
+  $items['admin/content/smartdocs/models/%smartdocs_model'] = array(
+    'title' => 'Model Detail',
+    'page callback' => 'smartdocs_show_model_detail',
+    'page arguments' => array(4),
+    'access arguments' => array('administer smartdocs content'),
+    'file' => 'smartdocs.admin.inc',
+    'type' => MENU_CALLBACK,
+  );
+  $items['admin/content/smartdocs/models/%smartdocs_model/import'] = array(
+    'title' => 'Import',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('smartdocs_import_model', 4),
+    'access arguments' => array('administer smartdocs content'),
+    'file' => 'smartdocs.admin.inc',
+    'type' => MENU_CALLBACK,
+  );
+  $items['admin/content/smartdocs/models/%smartdocs_model/export'] = array(
+    'title' => 'Export',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('smartdocs_model_export', 4),
+    'access arguments' => array('administer smartdocs content'),
+    'file' => 'smartdocs.admin.inc',
+    'type' => MENU_CALLBACK,
+  );
+  $items['admin/content/smartdocs/models/%smartdocs_model/settings'] = array(
+    'title' => 'Settings',
+    'page callback' => 'smartdocs_model_settings_page',
+    'page arguments' => array(4),
+    'access arguments' => array('administer smartdocs content'),
+    'file' => 'smartdocs.admin.inc',
+    'type' => MENU_CALLBACK,
+  );
+  $items['admin/content/smartdocs/models/%smartdocs_model/delete'] = array(
+    'title' => 'Delete',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('smartdocs_model_delete', 4),
+    'access arguments' => array('administer smartdocs content'),
+    'file' => 'smartdocs.admin.inc',
+    'type' => MENU_CALLBACK,
+  );
+
+  // Revisions.
+  $items['admin/content/smartdocs/models/%smartdocs_model/revisions'] = array(
+    'title' => 'API Revisions',
+    'page callback' => 'smartdocs_revision_list',
+    'page arguments' => array(4),
+    'access arguments' => array('administer smartdocs content'),
+    'file' => 'smartdocs.admin.inc',
+    'type' => MENU_CALLBACK,
+  );
+  $items['admin/content/smartdocs/models/%smartdocs_model/add'] = array(
+    'title' => 'Add API Revision',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('smartdocs_add_revision', 4),
+    'access arguments' => array('administer smartdocs content'),
+    'file' => 'smartdocs.admin.inc',
+    'type' => MENU_CALLBACK,
+  );
+  $items['admin/content/smartdocs/models/%smartdocs_model/export/%smartdocs_revision'] = array(
+    'title' => 'Export',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('smartdocs_model_export', 4, 6),
+    'access arguments' => array('administer smartdocs content'),
+    'file' => 'smartdocs.admin.inc',
+    'type' => MENU_CALLBACK,
+  );
+  $items['admin/content/smartdocs/models/%smartdocs_model/revisions/%smartdocs_revision'] = array(
+    'title' => 'Revisions',
+    'title callback' => 'smartdocs_revision_detail_page_title',
+    'title arguments' => array(6),
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('smartdocs_revision_detail', 4, 6),
+    'access arguments' => array('administer smartdocs content'),
+    'file' => 'smartdocs.admin.inc',
+    'type' => MENU_CALLBACK,
+  );
+  $items['admin/content/smartdocs/models/%smartdocs_model/revisions/%smartdocs_revision/auth'] = array(
+    'title' => 'Authentication Settings',
+    'page callback' => 'smartdocs_revision_auth',
+    'page arguments' => array(4, 6),
+    'access arguments' => array('administer smartdocs content'),
+    'file' => 'smartdocs.admin.inc',
+    'type' => MENU_CALLBACK,
+  );
+  $items['admin/content/smartdocs/%smartdocs_model/revisions/%smartdocs_revision/security'] = array(
+    'title' => 'Security Schemes',
+    'page callback' => 'smartdocs_security_scheme_list',
+    'page arguments' => array(3, 5),
+    'access arguments' => array('administer smartdocs content'),
+    'file' => 'smartdocs.admin.inc',
+    'type' => MENU_CALLBACK,
+  );
+  $items['admin/content/smartdocs/%smartdocs_model/revisions/%smartdocs_revision/security/add'] = array(
+    'title' => 'Add Security Scheme',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('smartdocs_model_security_scheme', 3, 5),
+    'access arguments' => array('administer smartdocs content'),
+    'file' => 'smartdocs.admin.inc',
+    'type' => MENU_CALLBACK,
+  );
+  $items['admin/content/smartdocs/%smartdocs_model/revisions/%smartdocs_revision/security/%/edit'] = array(
+    'title' => 'Edit Security Scheme',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('smartdocs_model_security_scheme', 3, 5, 7),
+    'access arguments' => array('administer smartdocs content'),
+    'file' => 'smartdocs.admin.inc',
+    'type' => MENU_CALLBACK,
+  );
+  $items['admin/content/smartdocs/%smartdocs_model/revisions/%smartdocs_revision/security/%/delete'] = array(
+    'title' => 'Delete Security Scheme',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('smartdocs_model_security_delete', 3, 5, 7),
+    'access arguments' => array('administer smartdocs content'),
+    'file' => 'smartdocs.admin.inc',
+    'type' => MENU_CALLBACK,
+  );
+  $items['admin/content/smartdocs/models/%smartdocs_model/revisions/%smartdocs_revision/edit'] = array(
+    'title' => 'Edit Revision',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('smartdocs_edit_revision', 4, 6),
+    'access arguments' => array('administer smartdocs content'),
+    'file' => 'smartdocs.admin.inc',
+    'type' => MENU_CALLBACK,
+  );
+
+  // Resources.
+  $items['admin/content/smartdocs/models/%smartdocs_model/resource/add/%smartdocs_revision'] = array(
+    'title' => 'Add Resource',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('smartdocs_resource_edit', 4, 7),
+    'access arguments' => array('administer smartdocs content'),
+    'file' => 'smartdocs.admin.inc',
+    'type' => MENU_CALLBACK,
+  );
+  $items['admin/content/smartdocs/models/%smartdocs_model/resource/edit/%smartdocs_revision/%smartdocs_resource'] = array(
+    'title' => 'Edit Resource',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('smartdocs_resource_edit', 4, 7, 8),
+    'access arguments' => array('administer smartdocs content'),
+    'file' => 'smartdocs.admin.inc',
+    'type' => MENU_CALLBACK,
+  );
+
+  // Methods.
+  $items['admin/content/smartdocs/models/%smartdocs_model/method/delete/%smartdocs_revision/%smartdocs_resource/%smartdocs_method'] = array(
+    'title' => 'Delete Method',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('smartdocs_method_delete', 4, 7, 8, 9),
+    'access arguments' => array('administer smartdocs content'),
+    'file' => 'smartdocs.admin.inc',
+    'type' => MENU_CALLBACK,
+  );
+  $items['admin/content/smartdocs/models/%smartdocs_model/method/toggle-status/%smartdocs_revision/%smartdocs_resource/%smartdocs_method'] = array(
+    'title' => 'Publish Method',
+    'page callback' => 'smartdocs_toggle_node_status',
+    'page arguments' => array(4, 7, 8, 9),
+    'access arguments' => array('administer smartdocs content'),
+    'file' => 'smartdocs.admin.inc',
+    'type' => MENU_CALLBACK,
+  );
+
+  $items['smartdocs/oauth/callback'] = array(
+    'title' => 'Authorizing',
+    'page callback' => 'smartdocs_oauth_callback',
+    'access arguments' => array('access content'),
+    'type' => MENU_CALLBACK,
+  );
+
+  return $items;
+}
+
+/**
+ * Implements hook_menu_alter().
+ */
+function smartdocs_menu_alter(&$items) {
+  $items['taxonomy/term/%taxonomy_term']['title callback'] = 'smartdocs_taxonomy_term_title';
+  $items['taxonomy/term/%taxonomy_term']['page callback'] = 'smartdocs_taxonomy_term_page';
+}
+
+/**
+ * Implements hook_permission().
+ */
+function smartdocs_permission() {
+  return array(
+    'administer smartdocs content' => array(
+      'title' => t('Administer SmartDocs Content'),
+      'description' => t('Perform administration tasks for the SmartDocs module.'),
+    ),
+  );
+}
+
+/**
+ * Implements hook_flush_caches().
+ */
+function smartdocs_flush_caches() {
+  return array('cache_smartdocs');
+}
+
+/**
+ * Forcibly clears all models from cache, then rebuilds cache from Edge.
+ *
+ * @param bool $notify
+ *   When TRUE, a message will be set after caches are rebuilt.
+ */
+function smartdocs_rebuild_cache_table($notify = TRUE) {
+  db_truncate('cache_smartdocs')->execute();
+  $config = devconnect_default_org_config();
+  // Don't log errors generated during cron runs.
+  $config->logger = new \Psr\Log\NullLogger();
+  $config->subscribers = array();
+
+  try {
+    $model_obj = new Model($config);
+    $models = $model_obj->listModels();
+  }
+  catch (ResponseException $e) {
+    drupal_set_message(t('Unable to fetch list of SmartDocs models.'), 'error');
+    return;
+  }
+  /** @var Apigee\SmartDocs\Model $model */
+  foreach ($models as $model) {
+    smartdocs_load_model_hierarchy($model->getUuid(), $config);
+  }
+  if ($notify) {
+    drupal_set_message(t('SmartDocs model cache has been rebuilt.'));
+  }
+}
+
+/**
+ * Themes the oauth callback.
+ *
+ * @return string
+ *   HTML markup.
+ */
+function smartdocs_oauth_callback() {
+  $config =& devconnect_get_org_settings();
+  return theme('smartdocs_oauth_callback', array(
+    'proxy' => str_replace('v1/smartdocs', 'smartdocs/v1/sendrequest', variable_get('api_proxy_url', 'https://apiconsole-prod.apigee.net/v1/smartdocs')),
+    'endpoint' => $config['endpoint'],
+  ));
+}
+
+/**
+ * Implements hook_theme().
+ */
+function smartdocs_theme($existing, $type, $theme, $path) {
+  $path = drupal_get_path('module', 'smartdocs');
+  return array(
+    'smartdocs_resources_table' => array(
+      'render element' => 'form',
+      'template' => 'smartdocs-resources-table',
+      'path' => $path . '/templates',
+    ),
+    'smartdocs_method' => array(
+      'variables' => array(
+        'vars' => NULL,
+        'mid' => NULL,
+      ),
+      'template' => 'smartdocs-method',
+      'path' => $path . '/templates',
+    ),
+    'smartdocs_oauth_callback' => array(
+      'variables' => NULL,
+      'template' => 'smartdocs-oauth-callback',
+      'path' => $path . '/templates',
+    ),
+  );
+}
+
+/**
+ * Implements hook_node_delete().
+ */
+function smartdocs_node_delete($node) {
+  $nid = db_select('smartdata', 's')
+    ->fields('s', array('nid'))
+    ->condition('nid', $node->nid)
+    ->execute()
+    ->fetchField();
+  if (!empty($nid)) {
+    $update = db_update('smartdata')->fields(array('nid' => NULL))
+      ->condition('nid', $node->nid)
+      ->execute();
+    if ($update) {
+      drupal_set_message(t('The node %title has also been unsynced from the %type model.', array(
+        '%title' => $node->title,
+        '%type' => $node->type,
+      )), 'warning');
+    }
+  }
+}
+
+/**
+ * Implements hook_views_api().
+ */
+function smartdocs_views_api() {
+  return array('api' => 3.0);
+}
+
+/**
+ * Pretty-prints JSON.
+ *
+ * Uses as many built-in PHP features as possible, and compensates for any
+ * features that were missing.
+ *
+ * @param mixed $obj
+ *   Data to be JSON-encoded.
+ *
+ * @return string
+ *   Pretty-printed JSON.
+ */
+function smartdocs_format_json($obj) {
+  $pretty_print = FALSE;
+  $slashes_unescaped = FALSE;
+  $json_options = JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT;
+  if (defined('JSON_PRETTY_PRINT')) {
+    $json_options |= JSON_PRETTY_PRINT;
+    $pretty_print = TRUE;
+  }
+  if (defined('JSON_UNESCAPED_SLASHES')) {
+    $json_options |= JSON_UNESCAPED_SLASHES;
+    $slashes_unescaped = TRUE;
+  }
+  $output = json_encode($obj, $json_options);
+  if (!$slashes_unescaped) {
+    // Unescape slashes by hand.
+    $output = str_replace('\\/', '/', $output);
+  }
+  if (!$pretty_print) {
+    // Do pretty-printing by hand.
+    $result = '';
+    $level = 0;
+    $in_quotes = FALSE;
+    $in_escape = FALSE;
+    $ends_line_level = NULL;
+    $json_length = strlen($output);
+
+    for ($i = 0; $i < $json_length; $i++) {
+      $char = $output[$i];
+      $new_line_level = NULL;
+      $post = '';
+      if ($ends_line_level !== NULL) {
+        $new_line_level = $ends_line_level;
+        $ends_line_level = NULL;
+      }
+      if ($in_escape) {
+        $in_escape = FALSE;
+      }
+      elseif ($char === '"') {
+        $in_quotes = !$in_quotes;
+      }
+      elseif (!$in_quotes) {
+        switch ($char) {
+          case '}':
+          case ']':
+            $level--;
+            $ends_line_level = NULL;
+            $new_line_level = $level;
+            break;
+
+          case '{':
+          case '[':
+            $level++;
+            // Fall through to next case.
+          case ',':
+            $ends_line_level = $level;
+            break;
+
+          case ':':
+            $post = " ";
+            break;
+
+          case ' ':
+          case "\t":
+          case "\n":
+          case "\r":
+            $char = "";
+            $ends_line_level = $new_line_level;
+            $new_line_level = NULL;
+            break;
+        }
+      }
+      elseif ($char === '\\') {
+        $in_escape = TRUE;
+      }
+      if ($new_line_level !== NULL) {
+        $result .= "\n" . str_repeat("\t", $new_line_level);
+      }
+      $result .= $char . $post;
+    }
+    $output = $result;
+  }
+  return $output;
+}
+
+/**
+ * Implements hook_cron().
+ *
+ * Builds the revision cache.
+ */
+function smartdocs_cron() {
+  $config = devconnect_default_org_config();
+  // Don't log errors generated during cron runs.
+  $config->logger = new \Psr\Log\NullLogger();
+  $config->subscribers = array();
+  try {
+    $model_obj = new Model($config);
+    $models = $model_obj->listModels();
+    if (count($models) == 0) {
+      if (function_exists('drush_log')) {
+        drush_log('No models defined for org ' . $config->orgName, 'status');
+      }
+      return;
+    }
+  }
+  catch (ResponseException $e) {
+    if (function_exists('drush_log')) {
+      drush_log('Cannot list models. Modeling API said: ' . $e->getCode() . ' ' . $e->getMessage(), 'error');
+    }
+    return;
+  }
+
+  $model_names = array();
+
+  /** @var Apigee\SmartDocs\Model $model */
+  foreach ($models as $model) {
+    $model_info[$model->getName()] = array('uuid' => $model->getUuid(), 'name' => $model->getDisplayName());
+    smartdocs_load_model_hierarchy($model->getUuid());
+  }
+  variable_set('smartdocs_model_info', $model_names);
+}
+
+/**
+ * Fetches, populates and returns an array of all models for the org.
+ *
+ * @return array
+ *   List of all models, each complete with latest revision and all its child
+ *   objects (resources & methods).
+ */
+function _smartdocs_get_methods_details() {
+  $config = devconnect_default_org_config();
+  try {
+    $model_obj = new Model($config);
+    $models = $model_obj->listModels();
+  }
+  catch (ResponseException $e) {
+    $models = array();
+  }
+
+  if (empty($models)) {
+    return $models;
+  }
+  uasort($models, function (Model $a, Model $b) {
+    $da = strtolower($a->getDisplayName());
+    $db = strtolower($b->getDisplayName());
+    if ($da == $db) {
+      return 0;
+    }
+    return ($da < $db) ? -1 : 1;
+  });
+
+  /** @var Apigee\SmartDocs\Model $model */
+  foreach ($models as &$model) {
+    $model = smartdocs_load_model_hierarchy($model->getUuid());
+  }
+  return $models;
+}
+
+/**
+ * Loads a model based on its name or UUID.
+ *
+ * This is used by the menu handler; it constructs Models to be passed to page
+ * callbacks.
+ *
+ * @param string $mid
+ *   UUID or name of a model.
+ *
+ * @return \Apigee\SmartDocs\Model|bool
+ *   Returns corresponding Model, or FALSE if it could not be loaded. This
+ *   results in a 404 when invoked by the menu handler.
+ */
+function smartdocs_model_load($mid) {
+  if (!class_exists('Apigee\\SmartDocs\\Model')) {
+    drupal_load('module', 'devconnect');
+    devconnect_init();
+  }
+  // If loading by name, we have to look up the UUID.
+  if (!preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i', $mid)) {
+    $model = new Model(devconnect_default_org_config());
+    try {
+      $model->load($mid);
+    }
+    catch (ResponseException $e) {
+      return FALSE;
+    }
+    catch (ParameterException $e) {
+      return FALSE;
+    }
+    $mid = $model->getUuid();
+  }
+  $model = smartdocs_load_model_hierarchy($mid);
+  drupal_static('smartdocs_model', $model);
+  return $model;
+}
+
+/**
+ * Loads a Revision based on revision number or UUID.
+ *
+ * This is used by the menu handler; it constructs Revisions to be passed to
+ * page callbacks.
+ *
+ * @param string|int $rev
+ *   Revision-number or UUID of the revision.
+ *
+ * @return \Apigee\SmartDocs\Revision|bool
+ *   Returns corresponding Revision, or FALSE if it could not be loaded. This
+ *   results in a 404 when invoked by the menu handler.
+ */
+function smartdocs_revision_load($rev) {
+  /** @var Apigee\SmartDocs\Model $model */
+  $model =& drupal_static('smartdocs_model');
+  if (!$model) {
+    return FALSE;
+  }
+  $is_uuid = preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i', $rev);
+  $active_rev = $model->getActiveRevision();
+  $revision = NULL;
+  if (!is_null($active_rev)) {
+    if (($is_uuid && $active_rev->getUuid() == $rev) || $active_rev->getRevisionNumber() == $rev) {
+      $revision = $active_rev;
+    }
+  }
+  if (empty($revision)) {
+    $revision = new Revision($model->getConfig(), $model->getUuid());
+    try {
+      $revision->load($rev);
+    }
+    catch (ResponseException $e) {
+      $server_body_response = $e->getResponse();
+      $exception_message = $e->getMessage();
+
+      $message_vars = array(
+        '%model_name' => $model->getName(),
+        '%revision' => $rev,
+        '%error_message' => empty($server_body_response) ? $exception_message : 'Edge Management server response: ' . $server_body_response,
+      );
+
+      drupal_set_message(t('Error loading revision %revision of model %model_name . %error_message', $message_vars), 'error');
+      watchdog('smartdocs', 'Error loading revision %revision of model %model_name. %error_message', $message_vars, WATCHDOG_ERROR);
+      return FALSE;
+    }
+    catch (ParameterException $e) {
+      $message_vars = array(
+        '%model_name' => $model->getName(),
+        '%revision' => $rev,
+        '%error_message' => $e->getMessage(),
+      );
+
+      drupal_set_message(t('Error loading revision %revision of model %model_name. %error_message', $message_vars), 'error');
+      watchdog('smartdocs', 'Error loading revision %revision of model %model_name. %error_message', $message_vars, WATCHDOG_ERROR);
+      return FALSE;
+    }
+  }
+
+  drupal_static('smartdocs_revision', $revision);
+  return $revision;
+}
+
+/**
+ * Loads a resource by its UUID.
+ *
+ * This is used by the menu handler; it constructs Resources to be passed to
+ * page callbacks.
+ *
+ * @param string $res
+ *   UUID of the requested resource.
+ *
+ * @return \Apigee\SmartDocs\Resource|bool
+ *   Returns corresponding Resource, or FALSE if it could not be loaded. This
+ *   results in a 404 when invoked by the menu handler.
+ */
+function smartdocs_resource_load($res) {
+  /** @var Apigee\SmartDocs\Model $model */
+  $model =& drupal_static('smartdocs_model');
+  /** @var Apigee\SmartDocs\Revision $revision */
+  $revision =& drupal_static('smartdocs_revision');
+  if (!$model || !$revision) {
+    return FALSE;
+  }
+  $found_resource = FALSE;
+  /** @var Apigee\SmartDocs\Resource $resource */
+  foreach ($revision->getResources() as $resource) {
+    if ($resource->getUuid() == $res) {
+      $found_resource = TRUE;
+      break;
+    }
+  }
+
+  if (!$found_resource) {
+    $resource = new Resource($model->getConfig(), $model->getUuid(), $revision->getUuid());
+    try {
+      $resource->load($res);
+    }
+    catch (ResponseException $e) {
+      return FALSE;
+    }
+    catch (ParameterException $e) {
+      return FALSE;
+    }
+  }
+
+  drupal_static('smartdocs_resource', $resource);
+  return $resource;
+}
+
+/**
+ * Loads a method by its UUID.
+ *
+ * This is used by the menu handler; it constructs Methods to be passed to
+ * page callbacks.
+ *
+ * @param string $method_id
+ *   UUID of method to be loaded.
+ *
+ * @return \Apigee\SmartDocs\Method|bool
+ *   Returns corresponding Method, or FALSE if it could not be loaded. This
+ *   results in a 404 when invoked by the menu handler.
+ */
+function smartdocs_method_load($method_id) {
+  /** @var Apigee\SmartDocs\Model $model */
+  $model =& drupal_static('smartdocs_model');
+  /** @var Apigee\SmartDocs\Revision $revision */
+  $revision =& drupal_static('smartdocs_revision');
+  /** @var Apigee\SmartDocs\Resource $resource */
+  $resource =& drupal_static('smartdocs_resource');
+  if (!$model || !$revision || !$resource) {
+    return FALSE;
+  }
+
+  $found_method = FALSE;
+  /** @var Apigee\SmartDocs\Method $method */
+  foreach ($resource->getMethods() as $method) {
+    if ($method->getUuid() == $method_id) {
+      $found_method = TRUE;
+      break;
+    }
+  }
+
+  if (!$found_method) {
+    $method = new Method($model->getConfig(), $model->getUuid(), $revision->getUuid(), $resource->getUuid());
+    try {
+      $method->load($method_id);
+    }
+    catch (ResponseException $e) {
+      return FALSE;
+    }
+    catch (ParameterException $e) {
+      return FALSE;
+    }
+  }
+  drupal_static('smartdocs_method', $method);
+  return $method;
+}
+
+/**
+ * Checks if given string is proper json.
+ *
+ * @param string $json
+ *   String to be checked for JSON-validity.
+ *
+ * @return bool
+ *   TRUE if item is valid as JSON, FALSE otherwise.
+ */
+function smartdocs_json_validate($json) {
+  json_decode('{' . $json . '}');
+  return (json_last_error() == JSON_ERROR_NONE);
+}
+
+/**
+ * Renders a node from a SmartDocs Method.
+ *
+ * @param Apigee\SmartDocs\Model $model
+ *   Model from which node is to be rendered.
+ * @param Apigee\SmartDocs\Revision $revision
+ *   Revision from which node is to be rendered.
+ * @param Apigee\SmartDocs\Resource $resource
+ *   Resource from which node is to be rendered.
+ * @param Apigee\SmartDocs\Method $method
+ *   Method from which node is to be rendered.
+ * @param bool $publish
+ *   TRUE if node should be published.
+ * @param array $context
+ *   Used for batching status.
+ *
+ * @return stdClass
+ *   The node that was rendered.
+ */
+function smartdocs_render_node(Model $model, Revision $revision, Resource $resource, Method $method, $publish, array &$context) {
+
+  $model_name = $model->getName();
+
+  $smartdocs_vocabs = array('smartdocs_verbs', 'smartdocs_tags', 'smartdocs_models');
+  $vocabularies = db_select('taxonomy_vocabulary', 't')
+    ->condition('machine_name', $smartdocs_vocabs)
+    ->fields('t', array('machine_name', 'vid'))
+    ->execute()
+    ->fetchAllKeyed();
+
+  $model_terms = array();
+  $result = db_select('taxonomy_term_data', 't')
+    ->condition('vid', $vocabularies['smartdocs_models'])
+    ->fields('t', array('tid', 'name'))
+    ->execute();
+  foreach ($result as $row) {
+    $model_terms[strtolower($row->name)] = $row->tid;
+  }
+
+  $tag_terms = array();
+  $result = db_select('taxonomy_term_data', 't')
+    ->condition('vid', $vocabularies['smartdocs_tags'])
+    ->fields('t', array('tid', 'name'))
+    ->execute();
+  foreach ($result as $row) {
+    $tag_terms[strtolower($row->name)] = $row->tid;
+  }
+
+  $verb_terms = array();
+  $result = db_select('taxonomy_term_data', 't')
+    ->condition('vid', $vocabularies['smartdocs_verbs'])
+    ->fields('t', array('tid', 'name'))
+    ->execute();
+  foreach ($result as $row) {
+    $verb_terms[strtoupper($row->name)] = $row->tid;
+  }
+
+  $query = array();
+  foreach ($method->getParameters() as $parameter) {
+    if (strtolower($parameter['type']) == 'query') {
+      $query[] = $parameter['name'];
+    }
+  }
+  $old_mpid = $model_name . $method->getPath() . '/' . strtoupper($method->getVerb()) . (empty($query) ? '' : '?' . implode('&', $query));
+  $new_mpid = $model_name . '|' . $method->getName();
+
+  $loaded = FALSE;
+  $smartdata_result = db_select('smartdata', 's')
+    ->fields('s', array('sid', 'nid', 'revision', 'mpid'))
+    ->condition('mpid', array($old_mpid, $new_mpid))
+    ->condition('model', $model_name)
+    ->execute()
+    ->fetchAssoc();
+  if ($smartdata_result) {
+    $node = node_load($smartdata_result['nid']);
+    if (empty($node)) {
+      // Should never happen!
+      db_delete('smartdata')->condition('method', $method->getUuid())->execute();
+      $smartdata_result = FALSE;
+    }
+    else {
+      db_update('smartdata')
+        ->fields(array(
+          'revision' => $revision->getRevisionNumber(),
+          'mpid' => $new_mpid,
+        ))
+        ->condition('model', $model_name)
+        ->condition('mpid', $smartdata_result['mpid'])
+        ->execute();
+      $loaded = TRUE;
+    }
+  }
+  if (!$smartdata_result) {
+    $node = new stdClass();
+    $node->type = 'smart_method';
+    $node->uid = $GLOBALS['user']->uid;
+    $node->status = intval($publish);
+  }
+
+  $node->revision = 1;
+  $node->log = t('Revision: @rev - Method: @title - @method was synced from SmartDocs.', array(
+    '@rev' => $revision->getRevisionNumber(),
+    '@title' => $method->getDisplayName(),
+    '@method' => $method->getUuid(),
+  ));
+  if ($loaded) {
+    $context['message'] = t('Syncing node ‘@name’', array('@name' => $method->getDisplayName()));
+  }
+  else {
+    $context['message'] = t('Creating node ‘@name’', array('@name' => $method->getDisplayName()));
+  }
+
+  $node->title = $method->getDisplayName();
+  $node->body[LANGUAGE_NONE][0]['value'] = $method->getDescription();
+
+  // field_smart_method_verb
+  $verb = strtoupper($method->getVerb());
+  if (array_key_exists($verb, $verb_terms)) {
+    $tid = $verb_terms[$verb];
+  }
+  else {
+    $term = new stdClass();
+    $term->name = strtoupper($method->getVerb());
+    $term->vid = $vocabularies['smartdocs_verbs'];
+    taxonomy_term_save($term);
+    $tid = $term->tid;
+  }
+  $node->field_smart_method_verb[LANGUAGE_NONE][0]['tid'] = $tid;
+
+  // field_smart_method_params
+  $params = array();
+  foreach ($method->getParameters() as $parameter) {
+    // Set some defaults.
+    $parameter += array(
+      'name' => '',
+      'description' => '',
+      'required' => FALSE,
+      'allowMultiple' => FALSE,
+      'dataType' => 'string',
+      'type' => 'body',
+      'options' => NULL,
+    );
+    $params[] = array(
+      'name' => $parameter['name'],
+      'description' => $parameter['description'],
+      'required' => intval($parameter['required']),
+      'allow_multiple' => intval($parameter['allowMultiple']),
+      'data_type' => $parameter['dataType'],
+      'type' => $parameter['type'],
+      'options' => (is_array($parameter['options']) ? json_encode($parameter['options']) : ''),
+    );
+  }
+  $node->field_smart_method_params[LANGUAGE_NONE] = $params;
+
+  // field_smart_method_body_attach
+  $method_body = $method->getBody();
+  $attachments = array();
+  $body_attachments = (array_key_exists('attachments', $method_body) ? $method_body['attachments'] : array());
+  foreach ($body_attachments as $attachment) {
+    $attachment += array(
+      'name' => '',
+      'description' => '',
+      'required' => FALSE,
+    );
+    $attachments[] = array(
+      'name' => $attachment['name'],
+      'description' => $attachment['description'],
+      'required' => intval($attachment['required']),
+    );
+  }
+  $node->field_smart_method_body_attach[LANGUAGE_NONE] = $attachments;
+
+  // field_smart_method_body_params.
+  $params = array();
+  $body_params = (array_key_exists('parameters', $method_body) ? $method_body['parameters'] : array());
+  foreach ($body_params as $parameter) {
+    // Set some defaults.
+    $parameter += array(
+      'name' => '',
+      'description' => '',
+      'required' => FALSE,
+      'allowMultiple' => FALSE,
+      'dataType' => 'string',
+      'type' => 'body',
+      'options' => NULL,
+    );
+    $params[] = array(
+      'name' => $parameter['name'],
+      'description' => $parameter['description'],
+      'required' => intval($parameter['required']),
+      'allow_multiple' => intval($parameter['allowMultiple']),
+      'data_type' => $parameter['dataType'],
+      'type' => $parameter['type'],
+      'options' => (is_array($parameter['options']) ? json_encode($parameter['options']) : ''),
+    );
+  }
+  $node->field_smart_method_body_params[LANGUAGE_NONE] = $params;
+
+  if (array_key_exists('contentType', $method_body)) {
+    $node->field_smart_method_mime_type[LANGUAGE_NONE][0]['value'] = $method_body['contentType'];
+  }
+  if (array_key_exists('doc', $method_body)) {
+    $node->field_smart_method_body_doc[LANGUAGE_NONE][0]['value'] = $method_body['doc'];
+  }
+  if (array_key_exists('sample', $method_body)) {
+    $node->field_smart_method_sample[LANGUAGE_NONE][0]['value'] = $method_body['sample'];
+  }
+
+  // field_smart_method_errors.
+  $errors = array();
+  $response = $method->getResponse();
+  $response_errors = (array_key_exists('errors', $response) ? $response['errors'] : array());
+  foreach ($response_errors as $error) {
+    // Make sure code is never null.
+    $error_code = empty($error['code']) ? 1 : $error['code'];
+    $error_description = $error['description'];
+    // Change all non integer values to 200 so we don't get a PDO Exception.
+    $error_http_code = is_int($error['httpStatusCode']) ? $error['httpStatusCode'] : 200;
+
+    $errors[] = array(
+      'code' => $error_code,
+      'description' => $error_description,
+      'http_code' => $error_http_code,
+    );
+  }
+  $node->field_smart_method_errors[LANGUAGE_NONE] = $errors;
+
+  // field_smart_method_tags.
+  $tags = array();
+  $vid = NULL;
+  foreach ($method->getTags() as $tag) {
+    $tag_l = strtolower($tag);
+    if (array_key_exists($tag_l, $tag_terms)) {
+      $tid = $tag_terms[$tag_l];
+    }
+    else {
+      $term = new stdClass();
+      $term->name = $tag;
+      $term->vid = $vocabularies['smartdocs_tags'];
+      taxonomy_term_save($term);
+      $tid = $term->tid;
+    }
+    $tags[] = array('tid' => $tid);
+  }
+  $node->field_smart_method_tags[LANGUAGE_NONE] = $tags;
+
+  // field_smart_method_model.
+  $model_l = strtolower($model->getName());
+  if (array_key_exists($model_l, $model_terms)) {
+    $tid = $model_terms[$model_l];
+  }
+  else {
+    $term = new stdClass();
+    $term->name = $model->getName();
+    $term->description = $model->getDescription();
+    $term->field_model_display_name[LANGUAGE_NONE][0]['value'] = $model->getDisplayName();
+    $term->vid = $vocabularies['smartdocs_models'];
+    taxonomy_term_save($term);
+    $tid = $term->tid;
+  }
+  $node->field_smart_method_model[LANGUAGE_NONE][0]['tid'] = $tid;
+  $node->field_smart_method_base_url[LANGUAGE_NONE][0]['value'] = $resource->getBaseUrl();
+  $node->field_smart_method_resource_path[LANGUAGE_NONE][0]['value'] = $resource->getPath();
+  $node->field_smart_method_uuid[LANGUAGE_NONE][0]['value'] = $method->getUuid();
+  $node->field_smart_method_resource_uuid[LANGUAGE_NONE][0]['value'] = $resource->getUuid();
+  $node->field_smart_method_revision_num[LANGUAGE_NONE][0]['value'] = $revision->getRevisionNumber();
+
+  $node->field_smart_method_security[LANGUAGE_NONE] = array();
+  foreach ($method->getSecurity() as $security) {
+    $node->field_smart_method_security[LANGUAGE_NONE][] = array('value' => $security);
+  }
+
+  // Set a flag so that smartdocs_node_presave() is skipped.
+  $node->method_already_created = TRUE;
+  node_save($node);
+  if ($node->nid) {
+    $record = array(
+      'nid' => $node->nid,
+      'revision' => $revision->getRevisionNumber(),
+      'resource' => $resource->getUuid(),
+      'method' => $method->getUuid(),
+      'model' => $model_name,
+      'synced' => 1,
+      'mpid' => $new_mpid,
+    );
+    if ($smartdata_result) {
+      $record['sid'] = $smartdata_result['sid'];
+      drupal_write_record('smartdata', $record, 'sid');
+    }
+    else {
+      drupal_write_record('smartdata', $record);
+    }
+  }
+  // Ensure this model has a view.
+  smartdocs_create_model_view($model);
+  return $node;
+}
+
+/**
+ * Provides JSON Example Structures for Methods in SmartDocs.
+ *
+ * @param string $which
+ *   Which section of the form do we need an example for?
+ *
+ * @return string
+ *   Plaintext output.
+ */
+function smartdocs_method_examples($which) {
+  switch ($which) {
+    case 'parameterGroups':
+      $example = '{
+  "minChoice":"1",
+  "maxChoice":"2",
+  "parameters":[
+    {
+      "dataType":"string",
+      "type":"query",
+      "name":"shirtsize",
+      "default":"lower",
+      "description":"Shirtsize.",
+      "options":["s","m","l"]
+    } ]
+}';
+      return '<pre>' . $example . '</pre>';
+
+    case 'parameters':
+      $example = '[
+    {
+        "dataType": "string",
+        "defaultValue": "",
+        "description": "Set the weather location as a WOEID.",
+        "name": "w",
+        "required": true,
+        "type": "QUERY"
+    }
+]';
+      return '<pre>' . $example . '</pre>';
+
+    case 'tags':
+      $example = '[
+    "Get Weather"
+]';
+      return '<pre>' . $example . '</pre>';
+
+    case 'customAttributes':
+      $example = '[
+  "name":"someattr",
+  "value":"somevalue"
+]';
+      return '<pre>' . $example . '</pre>';
+
+    default:
+      return NULL;
+  }
+}
+
+/**
+ * Finds the nid associated with a given method, or FALSE if there is none.
+ *
+ * @param Method $method
+ *   Method to query for a node.
+ *
+ * @return int|bool
+ *   Node's nid, or FALSE if node was not found.
+ */
+function _smartdocs_get_method_node(Method $method) {
+  return db_select('smartdata', 's')
+    ->fields('s', array('nid'))
+    ->condition('method', $method->getUuid())
+    ->execute()
+    ->fetchField();
+}
+
+/**
+ * Loads a model and its active revision (if there is one).
+ *
+ * The revision will in turn contain a hierarchy of resources and methods.
+ * Cache will be used whenever possible. In cases where data was read from the
+ * endpoint, cache will be written.
+ *
+ * @param string $model_uuid
+ *   UUID of the model to be loaded.
+ *
+ * @return Apigee\SmartDocs\Model|bool
+ *   Contains Model if it was found, otherwise FALSE.
+ */
+function smartdocs_load_model_hierarchy($model_uuid, $config = NULL) {
+  if (empty($config)) {
+    $config = devconnect_default_org_config();
+  }
+  $cid = 'model:' . $model_uuid;
+  $model = new Model($config);
+  $write_cache = FALSE;
+
+  $data = cache_get($cid, 'cache_smartdocs');
+  if (is_object($data) && is_array($data->data) && count($data->data) > 0) {
+    Model::fromArray($model, $data->data);
+  }
+  else {
+    try {
+      $model->load($model_uuid);
+    }
+    catch (ResponseException $e) {
+      return FALSE;
+    }
+    catch (ParameterException $e) {
+      return FALSE;
+    }
+    $write_cache = TRUE;
+  }
+
+  $revision_number = $model->getLatestRevisionNumber();
+  if ($revision_number > 0) {
+    if (is_null($model->getActiveRevision())) {
+      $write_cache = TRUE;
+      $revision = new Revision($config, $model_uuid);
+      try {
+        $revision->load($revision_number);
+
+        $query = db_select('smartdata', 's');
+        $query->innerJoin('node', 'n', 's.nid = n.nid');
+        $result = $query->fields('n', array('nid', 'status'))
+          ->fields('s', array('method'))
+          ->condition('model', $model->getName())
+          ->condition('revision', $revision->getRevisionNumber())
+          ->execute();
+        $nodes = array();
+        foreach ($result as $row) {
+          $nodes[$row->method] = array('nid' => $row->nid, 'status' => $row->status);
+        }
+
+        $resources = $revision->getResources();
+        /** @var Apigee\SmartDocs\Resource $resource */
+        foreach ($resources as &$resource) {
+          $methods = $resource->getMethods();
+          /** @var Apigee\SmartDocs\Method $method */
+          foreach ($methods as &$method) {
+            $method_uuid = $method->getUuid();
+            if (array_key_exists($method_uuid, $nodes)) {
+              $method->setMetadata('nid', $nodes[$method_uuid]['nid']);
+              $method->setMetadata('status', $nodes[$method_uuid]['status']);
+            }
+          }
+        }
+        $model->setActiveRevision($revision);
+      }
+      catch (ResponseException $e) {
+      }
+      catch (ParameterException $e) {
+      }
+    }
+  }
+
+  if ($write_cache) {
+    cache_set($cid, $model->toArray(), 'cache_smartdocs');
+    if (function_exists('drush_log')) {
+      drush_log('Rebuilt cache for ' . $model->getName(), 'success');
+    }
+  }
+
+  return $model;
+}
+
+/**
+ * Implements hook_admin_menu_cache_info().
+ */
+function smartdocs_admin_menu_cache_info() {
+  $caches['smartdocs'] = array(
+    'title' => t('SmartDocs models'),
+    'callback' => '_smartdocs_flush_models',
+  );
+  return $caches;
+}
+
+/**
+ * Admin menu cache flush callback.
+ */
+function _smartdocs_flush_models() {
+  smartdocs_rebuild_cache_table(FALSE);
+}
+
+/**
+ * Implements hook_module_implements_alter().
+ */
+function smartdocs_module_implements_alter(&$implementations, $hook) {
+  if ($hook == 'form_alter' && array_key_exists('smartdocs', $implementations)) {
+    // Move smartdocs implementation to the bottom of the list so that
+    // hook_form_alter, hook_form_FORM_ID_alter, etc. get called last for this
+    // module.
+    $group = $implementations['smartdocs'];
+    unset($implementations['smartdocs']);
+    $implementations['smartdocs'] = $group;
+  }
+}
+
+/**
+ * Implements hook_form_FORM_ID_alter() for smart_method_node_form().
+ *
+ * If a new method is being created, we ensure that proper identifiers for the
+ * model, revision and resource are present.
+ *
+ * Additionally, the Model and Resource Path fields are re-created as item
+ * fields (meaning that they are read-only), and the resource, revision and
+ * method ID fields are hidden entirely.
+ */
+function smartdocs_form_smart_method_node_form_alter(array &$form, array &$form_state) {
+  // TODO: Handle association with model/revision/resource dynamically.
+  if (!isset($form['nid']['#value'])) {
+    // For model, revision, resource, look in $form_state first, and if not
+    // found there, then try to fetch from URL query string.
+    if (!empty($form_state['storage']['model'])) {
+      $model = $form_state['storage']['model'];
+    }
+    else {
+      $model = (array_key_exists('model', $_GET) ? $_GET['model'] : NULL);
+    }
+    if (!empty($form_state['storage']['revision'])) {
+      $revision = $form_state['storage']['revision'];
+    }
+    else {
+      $revision = (array_key_exists('revision', $_GET) ? intval($_GET['revision']) : 0);
+    }
+    if (!empty($form_state['storage']['resource'])) {
+      $resource = $form_state['storage']['resource'];
+    }
+    else {
+      $resource = (array_key_exists('resource', $_GET) ? $_GET['resource'] : NULL);
+    }
+    $resource_path = $resource_base_url = NULL;
+
+    if (!empty($model) && !empty($revision) && !empty($resource)) {
+      $resource_obj = new Resource(devconnect_default_org_config(), $model, $revision);
+      try {
+        $resource_obj->load($resource);
+        $resource_path = $resource_obj->getPath();
+        $resource_base_url = $resource_obj->getBaseUrl();
+      }
+      catch (ResponseException $e) {
+        $model = NULL;
+      }
+      catch (ParameterException $e) {
+        $model = NULL;
+      }
+    }
+    if (empty($model) || empty($revision) || empty($resource)) {
+      $form = array();
+      $form['message'] = array(
+        '#type' => 'markup',
+        '#markup' => t('SmartDocs Methods cannot be directly created; they must be added from the <a href="@url">SmartDocs admin screen</a>.', array('@url' => url('admin/content/smartdocs/models'))),
+      );
+      return;
+    }
+    $term = taxonomy_get_term_by_name($model, 'smartdocs_models');
+    if ($term && count($term)) {
+      $term = reset($term);
+    }
+    else {
+      $vocab = taxonomy_vocabulary_machine_name_load('smartdocs_models');
+      $term = new stdClass();
+      $term->vid = $vocab->vid;
+      $term->name = $model;
+      taxonomy_term_save($term);
+    }
+    $form['field_smart_method_model'][LANGUAGE_NONE]['#default_value'] = array($term->tid);
+    $form['field_smart_method_base_url'][LANGUAGE_NONE][0]['value']['#default_value'] = $resource_base_url;
+    $form['field_smart_method_resource_path'][LANGUAGE_NONE][0]['value']['#default_value'] = $resource_path;
+    $form['field_smart_method_resource_uuid'][LANGUAGE_NONE][0]['value']['#default_value'] = $resource;
+    $form['field_smart_method_revision_num'][LANGUAGE_NONE][0]['value']['#default_value'] = $revision;
+
+    $form['warning_notice'] = array(
+      '#weight' => -9999,
+      '#type' => 'markup',
+      '#markup' => t('This information will be saved to both Drupal and the Modeling API.'),
+      '#prefix' => '<div class="messages warning">',
+      '#suffix' => '</div>',
+    );
+  }
+  else {
+    $form['warning_notice'] = array(
+      '#weight' => -9999,
+      '#type' => 'markup',
+      '#markup' => t('If you select ‘Save’, your changes will be saved to both Drupal and the Modeling API. If you choose ‘Delete’, the Drupal node will be deleted, but the corresponding method on the Modeling API will <strong>not</strong> be deleted.'),
+      '#prefix' => '<div class="messages warning">',
+      '#suffix' => '</div>',
+    );
+    // Populate $model and $revision vars with model name and revision number
+    // respectively.
+    $model_tid = $form['#node']->field_smart_method_model[LANGUAGE_NONE][0]['tid'];
+    if ($model_tid) {
+      $model_term = taxonomy_term_load($model_tid);
+      if ($model_term) {
+        $model = $model_term->name;
+      }
+    }
+    $revision = $form['#node']->field_smart_method_revision_num[LANGUAGE_NONE][0]['value'];
+    $resource_base_url = $form['#node']->field_smart_method_base_url[LANGUAGE_NONE][0]['value'];
+    $resource_path = $form['#node']->field_smart_method_resource_path[LANGUAGE_NONE][0]['value'];
+  }
+
+  // Populate checkbox options for Security field.
+  $options = array();
+  if (!empty($model) && !empty($revision)) {
+    // Load all security schemes available to the revision.
+    try {
+      $security = new Security(devconnect_default_org_config(), $model, $revision);
+      $security_schemes = $security->loadAllSchemes();
+    }
+    catch (ResponseException $e) {
+      $security_schemes = array();
+    }
+    /** @var Apigee\SmartDocs\Security\SecurityScheme $security_scheme */
+    foreach ($security_schemes as $security_scheme) {
+      $options[$security_scheme->getName()] = $security_scheme->getName() . ' ('. $security_scheme->getType(TRUE) . ')';
+    }
+    // We cannot use the field's #default_value array here, because it is
+    // empty. This is because the smart_method's security field is defined as
+    // a list, but no valid list options are defined by the content-type. We
+    // supply those options here.
+    if (array_key_exists('#node', $form) && property_exists($form['#node'], 'field_smart_method_security') && array_key_exists(LANGUAGE_NONE, $form['#node']->field_smart_method_security)) {
+      $default_values = $form['#node']->field_smart_method_security[LANGUAGE_NONE];
+    }
+    if (!isset($default_values) || !is_array($default_values)) {
+      $default_values = array();
+    }
+    // Make sure there aren't any invalid default values here by ensuring that
+    // each one exists in the list of options we fetched from the Security
+    // object.
+    foreach ($default_values as $value) {
+      if (array_key_exists($value['value'], $options)) {
+        $form['field_smart_method_security'][LANGUAGE_NONE]['#default_value'][] = $value['value'];
+      }
+    }
+    $form['field_smart_method_security'][LANGUAGE_NONE]['#options'] = $options;
+  }
+  // If no security schemes were defined for the revision, hide this whole thing.
+  if (count($options) == 0) {
+    $form['field_smart_method_security']['#access'] = FALSE;
+  }
+
+  $form['field_smart_method_model']['#access'] = FALSE;
+  $form['field_smart_method_base_url']['#access'] = FALSE;
+  $form['field_smart_method_resource_path']['#access'] = FALSE;
+  $form['field_smart_method_resource_uuid']['#access'] = FALSE;
+  $form['field_smart_method_revision_num']['#access'] = FALSE;
+  $form['field_smart_method_uuid']['#access'] = FALSE;
+
+  $form['model'] = array(
+    '#type' => 'item',
+    '#title' => t('Model'),
+    '#markup' => $model,
+    '#weight' => $form['field_smart_method_model']['#weight'],
+  );
+  $form['resource_path'] = array(
+    '#type' => 'item',
+    '#title' => t('Resource path'),
+    '#markup' => $resource_base_url . $resource_path,
+    '#weight' => $form['field_smart_method_base_url']['#weight'],
+  );
+
+  // Store model, resource, revision in form_state so that when the form is
+  // rebuilt for "Add more..." via AJAX, we don't error out for missing data.
+  $form_state['storage']['model'] = $model;
+  $form_state['storage']['resource'] = $form['field_smart_method_resource_uuid'][LANGUAGE_NONE][0]['value']['#default_value'];
+  $form_state['storage']['revision'] = $form['field_smart_method_revision_num'][LANGUAGE_NONE][0]['value']['#default_value'];
+}
+
+/**
+ * Implements hook_node_presave().
+ *
+ * Saves method data to Modeling API when a smart_method node is saved. When
+ * the method has been saved, the node's method-uuid field is populated.
+ *
+ * We are not able to write data to the smartdata table while hook_node_presave
+ * is being invoked, because on insert the node does not have a nid yet. We
+ * therefore save data to be persisted to this table in $node->smartdata
+ * and let hook_node_insert and hook_node_update handle this step.
+ */
+function smartdocs_node_presave($node) {
+  if ($node->type != 'smart_method' || property_exists($node, 'method_already_created')) {
+    return;
+  }
+  $is_update = (!property_exists($node, 'is_new') || !$node->is_new);
+  $model_tid = $node->field_smart_method_model[LANGUAGE_NONE][0]['tid'];
+  $model_term = taxonomy_term_load($model_tid);
+  $model_name = $model_term->name;
+  $revision_num = $node->field_smart_method_revision_num[LANGUAGE_NONE][0]['value'];
+  $resource_uuid = $node->field_smart_method_resource_uuid[LANGUAGE_NONE][0]['value'];
+
+  $method_obj = new Method(devconnect_default_org_config(), $model_name, $revision_num, $resource_uuid);
+  if ($is_update) {
+    try {
+      $method_obj->load($node->field_smart_method_uuid[LANGUAGE_NONE][0]['value']);
+    }
+    catch (Exception $e) {
+      watchdog_exception('smartdocs', $e);
+      drupal_set_message(t('Unable to update Modeling API (could not load method to be updated).'), 'error');
+      return;
+    }
+  }
+  else {
+    $method_obj->setName(preg_replace('![^A-Za-z0-9]!', '', $node->title));
+  }
+
+  $verb_term = taxonomy_term_load($node->field_smart_method_verb[LANGUAGE_NONE][0]['tid']);
+
+  $method_obj->setDisplayName($node->title);
+  $method_obj->setDescription(isset($node->body[LANGUAGE_NONE][0]['value']) ? $node->body[LANGUAGE_NONE][0]['value'] : '');
+  $method_obj->setVerb($verb_term->name);
+
+  $params = array();
+  foreach ($node->field_smart_method_params[LANGUAGE_NONE] as $index => $param) {
+    if (!is_int($index) || !is_array($param)) {
+      continue;
+    }
+    if (empty($param['name']) || empty($param['data_type']) || empty($param['type'])) {
+      continue;
+    }
+    foreach (array('allow_multiple', 'description', 'required') as $field) {
+      if (!array_key_exists($field, $param)) {
+        $param[$field] = FALSE;
+      }
+    }
+    $param_obj = array(
+      'allowMultiple' => (bool) $param['allow_multiple'],
+      'dataType' => $param['data_type'],
+      'name' => $param['name'],
+      'type' => $param['type'],
+      'required' => (bool) $param['required'],
+      'description' => (string) $param['description'],
+    );
+    $options = @json_decode($param['options']);
+    if (is_array($options) && !empty($options)) {
+      $param_obj['options'] = array_values($options);
+    }
+    $params[] = $param_obj;
+  }
+  $method_obj->setParameters($params);
+
+  $body = $method_obj->getBody();
+  $body['attachments'] = array();
+  $body['parameters'] = array();
+  foreach ($node->field_smart_method_body_attach[LANGUAGE_NONE] as $attach) {
+    if (empty($attach['name'])) {
+      continue;
+    }
+    $body['attachments'][] = array(
+      'name' => $attach['name'],
+      'description' => (array_key_exists('description', $attach) ? (string) $attach['description'] : ''),
+      'required' => (array_key_exists('required', $attach) ? (bool) $attach['required'] : FALSE),
+    );
+  }
+  foreach ($node->field_smart_method_body_params[LANGUAGE_NONE] as $index => $param) {
+    if (!is_int($index) || !is_array($param)) {
+      continue;
+    }
+    foreach (array('allow_multiple', 'description', 'required') as $field) {
+      if (!array_key_exists($field, $param)) {
+        $param[$field] = FALSE;
+      }
+    }
+    $param_obj = array(
+      'allowMultiple' => (bool) $param['allow_multiple'],
+      'dataType' => $param['data_type'],
+      'name' => $param['name'],
+      'type' => $param['type'],
+      'required' => (bool) $param['required'],
+      'description' => (string) $param['description'],
+    );
+    $options = @json_decode($param['options']);
+    if (is_array($options) && !empty($options)) {
+      $param_obj['options'] = array_values($options);
+    }
+    $body['parameters'][] = $param_obj;
+  }
+
+  $other_body_fields = array(
+    'contentType' => 'field_smart_method_mime_type',
+    'doc' => 'field_smart_method_body_doc',
+    'sample' => 'field_smart_method_sample',
+  );
+  foreach ($other_body_fields as $key => $other_field) {
+    if (property_exists($node, $other_field) && !empty($node->{$other_field}[LANGUAGE_NONE][0]['value'])) {
+      $body[$key] = $node->{$other_field}[LANGUAGE_NONE][0]['value'];
+    }
+    elseif (array_key_exists($key, $body)) {
+      unset($body[$key]);
+    }
+  }
+
+  $method_obj->setBody($body);
+
+  $response = $method_obj->getResponse();
+  $response['errors'] = array();
+  foreach ($node->field_smart_method_errors[LANGUAGE_NONE] as $error) {
+    if (empty($error['code']) || empty($error['http_code'])) {
+      continue;
+    }
+    $response['errors'][] = array(
+      'code' => $error['code'],
+      'description' => (array_key_exists('description', $error) ? (string) $error['description'] : ''),
+      'httpCode' => intval($error['http_code']),
+    );
+  }
+  $method_obj->setResponse($response);
+
+  $tags = array();
+  if (property_exists($node, 'field_smart_method_tags') && array_key_exists(LANGUAGE_NONE, $node->field_smart_method_tags)) {
+    foreach ($node->field_smart_method_tags[LANGUAGE_NONE] as $tag) {
+      $tags[] = $tag['name'];
+    }
+  }
+  $method_obj->setTags($tags);
+
+  $security = array();
+  foreach ($node->field_smart_method_security[LANGUAGE_NONE] as $s) {
+    if (!empty($s['value'])) {
+      $security[] = $s['value'];
+    }
+  }
+  $method_obj->setSecurity($security);
+
+  $query = array();
+  foreach ($method_obj->getParameters() as $parameter) {
+    if (strtolower($parameter['type']) == 'query') {
+      $query[] = $parameter['name'];
+    }
+  }
+  $old_mpid = $model_name . $method_obj->getPath() . '/' . strtoupper($method_obj->getVerb()) . (empty($query) ? '' : '?' . implode('&', $query));
+  $new_mpid = $model_name . '|' . $method_obj->getName();
+
+  try {
+    $method_obj->save($is_update);
+    drupal_set_message(t('Modeling API was successfully updated.'));
+    // Make sure node has method_uuid populated.
+    if (!$is_update) {
+      $node->field_smart_method_uuid[LANGUAGE_NONE][0]['value'] = $method_obj->getUuid();
+    }
+    // Prepare smartdata record for writing.
+    $record = array(
+      'revision' => $revision_num,
+      'resource' => $resource_uuid,
+      'method' => $method_obj->getUuid(),
+      'model' => $model_name,
+      'synced' => 1,
+      'mpid' => $new_mpid,
+    );
+    $sid = db_select('smartdata', 's')
+      ->fields('s', array('sid'))
+      ->condition('mpid', array($old_mpid, $new_mpid))
+      ->execute()
+      ->fetchField();
+    if ($sid) {
+      $record['sid'] = $sid;
+    }
+    // Store this data in the node to be handled by hook_node_insert() or
+    // hook_node_update().
+    $node->smartdata = $record;
+  }
+  catch (Exception $e) {
+    watchdog_exception('smartdocs', $e);
+    drupal_set_message(t('Unable to update Modeling API (save failed).'), 'error');
+  }
+}
+
+/**
+ * Implements hook_node_insert().
+ */
+function smartdocs_node_insert($node) {
+  _smartdocs_write_smartdata($node);
+}
+
+/**
+ * Implements hook_node_update().
+ */
+function smartdocs_node_update($node) {
+  _smartdocs_write_smartdata($node);
+}
+
+/**
+ * Writes a node's data to the smartdata table and clear cache for its
+ * associated model.
+ *
+ * @param $node
+ */
+function _smartdocs_write_smartdata($node) {
+  if ($node->type != 'smart_method' || !property_exists($node, 'smartdata') || property_exists($node, 'method_already_created')) {
+    return;
+  }
+  $record = $node->smartdata;
+  $record['nid'] = $node->nid;
+  if (array_key_exists('sid', $record)) {
+    drupal_write_record('smartdata', $record, 'sid');
+  }
+  else {
+    drupal_write_record('smartdata', $record);
+  }
+  // Invalidate model cache.
+  try {
+    $model = new Model(devconnect_default_org_config());
+    $model->load($record['model']);
+    cache_clear_all('model:' . $model->getUuid(), 'cache_smartdocs');
+  }
+  catch (Exception $e) {
+    cache_clear_all(NULL, 'cache_smartdocs');
+  }
+}
+
+/**
+ * Title callback for taxonomy term pages.
+ *
+ * If the term has a "display name" field, that is returned rather than the
+ * name property.
+ *
+ * @param object $term
+ *   The taxonomy term for which a title should be generated.
+ *
+ * @return string
+ *   The generated title.
+ */
+function smartdocs_taxonomy_term_title($term) {
+  if (property_exists($term, 'field_model_display_name') && !empty($term->field_model_display_name[LANGUAGE_NONE][0]['value'])) {
+    return $term->field_model_display_name[LANGUAGE_NONE][0]['value'];
+  }
+  return $term->name;
+}
+
+/**
+ * Page callback for taxonomy terms.
+ *
+ * If the term is a SmartDocs model, we display the view enumerating its
+ * methods. Otherwise we fall back to the default term page provided by the
+ * taxonomy module.
+ *
+ * @param object $term
+ *   The taxonomy term for which a page is to be generated.
+ *
+ * @return array
+ *   The render-array of items to be displayed on the page.
+ */
+function smartdocs_taxonomy_term_page($term) {
+  if (!property_exists($term, 'field_model_display_name')) {
+    return taxonomy_term_page($term);
+  }
+  drupal_set_title(smartdocs_taxonomy_term_title($term));
+
+  // View names may only be 128 char long.
+  $view_name = substr($term->name . '_methods', 0, 128);
+  $view = views_get_view($view_name);
+  $view_args = array();
+  if (!$view) {
+    $view = views_get_view('smartdocs_methods');
+    $view_args[] = $term->tid;
+  }
+
+  $output = array();
+  if (!empty($term->description)) {
+    $output['description'] = array(
+      '#type' => 'markup',
+      '#markup' => $term->description,
+      '#prefix' => '<p class="model-description">',
+      '#suffix' => '</p>',
+    );
+  }
+  $output['methods'] = array(
+    '#type' => 'markup',
+    '#markup' => $view->preview('modelindex', $view_args),
+  );
+
+  return $output;
+}
+
+/**
+ * Implements hook_block_info().
+ */
+function smartdocs_block_info() {
+  $blocks['method_toc'] = array(
+    'info' => t('Method Sidebar TOC'),
+    'cache' => DRUPAL_CACHE_PER_PAGE,
+  );
+  return $blocks;
+}
+
+/**
+ * Implements hook_block_view().
+ */
+function smartdocs_block_view($delta = 'method_toc') {
+  $block = array('subject' => '', 'content' => '');
+  $node = menu_get_object();
+  if (is_object($node) && property_exists($node, 'field_smart_method_model') && !empty($node->field_smart_method_model[LANGUAGE_NONE][0]['tid'])) {
+    $term = taxonomy_term_load($node->field_smart_method_model[LANGUAGE_NONE][0]['tid']);
+    if ($term) {
+      $block = array(
+        'subject' => t('@model_name Methods', array('@model_name' => smartdocs_taxonomy_term_title($term))),
+        'content' => views_get_view('smartdocs_methods')->preview('methodtoc', array($term->tid)),
+      );
+    }
+  }
+  return $block;
+}
+
+/**
+ * Title callback for the revision details page.
+ *
+ * @param \Apigee\SmartDocs\Revision $revision
+ *   The Revision object
+ *
+ * @return string
+ *   The title for the revision details page.
+ */
+function smartdocs_revision_detail_page_title(Revision $revision) {
+  $rev = is_object($revision) ? $revision->getRevisionNumber() : '';
+  return t('Revision #!rev', array('!rev' => $rev));
+}
+
+/**
+ * Implements hook_taxonomy_term_insert().
+ *
+ * Makes sure that any new models that are created have a view created for
+ * them.
+ */
+function smartdocs_taxonomy_term_insert($term) {
+  // Ensure that we only act on the models vocabulary.
+  $vocab = taxonomy_vocabulary_machine_name_load('smartdocs_models');
+  if (!$vocab || $term->vid != $vocab->vid) {
+    return;
+  }
+
+  $model = new Model(devconnect_default_org_config());
+  try {
+    $model->load($term->name);
+    smartdocs_create_model_view($model);
+  }
+  catch (Exception $e) {
+  }
+}
+
+/**
+ * Creates a model-specific view, based on the generic model view.
+ *
+ * If such a view already exists, or if we cannot find/create a term
+ * corresponding to the model, we bail early. (The latter should never
+ * happen!)
+ *
+ * @param Apigee\SmartDocs\Model $model
+ *   The model for which we are creating a view.
+ */
+function smartdocs_create_model_view(Model $model) {
+  // Cache to avoid re-querying for the same view.
+  static $views_processed = array();
+
+  // View names may only be 128 char long.
+  $view_name = substr($model->getName() . '_methods', 0, 128);
+  if (in_array($view_name, $views_processed)) {
+    return;
+  }
+  $view = views_get_view($view_name);
+  if (isset($view)) {
+    $views_processed[] = $view_name;
+    return;
+  }
+
+  $term = taxonomy_get_term_by_name($model->getName(), 'smartdocs_models');
+  // Where possible, create a term for this model. We should never get this
+  // far in an ideal world, but there may be bad legacy data out there.
+  if (empty($term)) {
+    $vocabs = taxonomy_vocabulary_machine_name_load('smartdocs_models');
+    if (!empty($vocabs)) {
+      $vocab = reset($vocabs);
+      $term = new stdClass;
+      $term->vid = $vocab->vid;
+      $term->name = $model->getName();
+      $term->description = $model->getDescription();
+      $term->field_model_display_name[LANGUAGE_NONE][0]['value'] = $model->getDisplayName();
+      taxonomy_term_save($term);
+    }
+  }
+  else {
+    $term = reset($term);
+  }
+  if (empty($term)) {
+    return;
+  }
+
+  module_load_include('inc', 'smartdocs', 'smartdocs.views_default');
+  $generic_views = smartdocs_views_default_views();
+  /** @var view $view */
+  $view = $generic_views['smartdocs_methods'];
+  $view->name = $view_name;
+  $view->human_name = $model->getDisplayName() . ' Method Listing';
+
+  $view->display['default']->display_options['filters'] = array(
+    'model_tid' => array(
+      'id' => 'model_tid',
+      'table' => 'field_data_field_smart_method_model',
+      'field' => 'field_smart_method_model_tid',
+      'value' => $term->tid,
+      'group' => 1,
+      'expose' => array('operator' => FALSE),
+    ),
+  );
+  $view->display['frontpage']->display_options['title'] = $model->getDisplayName() . ' APIs';
+  $view->display['modelindex']->display_options = array();
+
+  unset($view->display['methodtoc']->display_options['defaults']['arguments']);
+  unset($view->display['methodtoc']->display_options['arguments']);
+
+  views_save_view($view);
+  $views_processed[] = $view_name;
+}
